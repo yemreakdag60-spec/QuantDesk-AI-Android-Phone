@@ -1,21 +1,105 @@
-name: Build Android APK
+name: Train, validate, and build QuantDesk AI
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
   push:
-    branches:
-      - main
+    branches: [main]
+    paths-ignore:
+      - 'models/**'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: quantdesk-train-and-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  train-and-build:
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 90
     steps:
-      - name: Check out source
+      - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Unpack Android source
+        run: unzip -q QuantDesk-AI-Android-ML-v0.2.zip -d .
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: quantdesk-ai-android/ml/requirements.txt
+
+      - name: Install model training dependencies
+        working-directory: quantdesk-ai-android
+        run: python -m pip install -r ml/requirements.txt
+
+      - name: Test model feature and export code
+        working-directory: quantdesk-ai-android
+        run: python -m unittest discover -s ml -p 'test_*.py' -v
+
+      - name: Download history, train, calibrate, and evaluate
+        id: train
+        continue-on-error: true
+        working-directory: quantdesk-ai-android
+        run: >-
+          python ml/train_model.py
+          --days 730
+          --symbols 24
+          --output app/src/main/assets/pretrained_model.json
+          --champion ../models/latest.json
+          --report ../model_report.json
+
+      - name: Save training report even when training fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuantDesk-model-evaluation-${{ github.run_number }}
+          path: model_report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Require an eligible model before building the app
+        working-directory: quantdesk-ai-android
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          model_path = Path('app/src/main/assets/pretrained_model.json')
+          try:
+              model = json.loads(model_path.read_text())
+          except Exception as exc:
+              raise SystemExit(f'No readable trained model: {exc}')
+          if model.get('schema_version') != 2 or model.get('eligible') is not True:
+              raise SystemExit('No model passed the holdout checks; APK build stopped.')
+          print('Eligible model:', model.get('model_id', 'unknown'))
+          print('Training data ended:', model.get('training_data_end_utc', 'unknown'))
+          PY
+
+      - name: Publish newly promoted model for the phone app
+        if: success()
+        run: |
+          status="$(python -c "import json; print(json.load(open('model_report.json')).get('status', ''))")"
+          if [ "$status" = "promoted" ]; then
+            mkdir -p models
+            cp quantdesk-ai-android/app/src/main/assets/pretrained_model.json models/latest.json
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add models/latest.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Promote validated QuantDesk model'
+              git push
+            fi
+          else
+            echo "No new champion was promoted; keeping the existing validated model."
+          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -28,23 +112,23 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      - name: Install Android platform
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Install Android platform and build tools
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Extract source and build APK
-        run: |
-          unzip -q QuantDesk-AI-Android-Source-v0.1.zip
-          cd quantdesk-ai-android
-          gradle --no-daemon :app:assembleDebug
+      - name: Build installable debug APK
+        working-directory: quantdesk-ai-android
+        run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-AI-Android-APK
+          name: QuantDesk-AI-Android-0.2.0
           path: quantdesk-ai-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 30
+          
