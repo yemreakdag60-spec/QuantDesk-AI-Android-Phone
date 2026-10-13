@@ -27,7 +27,7 @@ jobs:
           persist-credentials: true
 
       - name: Unpack Android source
-        run: unzip -q QuantDesk-AI-Android-ML-v0.2.zip -d .
+        run: unzip -q QuantDesk-AI-Android-ML-v0.3.zip -d .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -78,7 +78,15 @@ jobs:
           except Exception as exc:
               raise SystemExit(f'No readable trained model: {exc}')
           if model.get('schema_version') != 2 or model.get('eligible') is not True:
-              raise SystemExit('No model passed the holdout checks; APK build stopped.')
+              try:
+                  report = json.loads(Path('../model_report.json').read_text())
+              except Exception:
+                  report = {}
+              raise SystemExit(
+                  'No eligible model; APK build stopped. '
+                  f"Training status={report.get('status', 'unknown')}; "
+                  f"reason={report.get('reason', 'see model_report.json artifact')}"
+              )
           print('Eligible model:', model.get('model_id', 'unknown'))
           print('Training data ended:', model.get('training_data_end_utc', 'unknown'))
           PY
