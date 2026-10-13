@@ -127,7 +127,8 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-AI-Android-0.2.0
+          name: QuantDesk-AI-Android-0.3.0
           path: quantdesk-ai-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+          
