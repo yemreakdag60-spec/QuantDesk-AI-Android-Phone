@@ -27,7 +27,7 @@ jobs:
           persist-credentials: true
 
       - name: Unpack Android source
-        run: unzip -q QuantDesk-AI-Android-ML-v0.5.zip -d .
+        run: unzip -q QuantDesk-AI-Android-ML-v0.5.1.zip -d .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -65,34 +65,56 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Require an eligible model before building the app
+      - name: Record model readiness and build status
         working-directory: quantdesk-ai-android
+        if: always()
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           model_path = Path('app/src/main/assets/pretrained_model.json')
+          report_path = Path('../model_report.json')
           try:
               model = json.loads(model_path.read_text())
+              readable = model.get('schema_version') == 2
+              eligible = readable and model.get('eligible') is True
+              model_id = model.get('model_id', 'unknown')
+              trained_to = model.get('training_data_end_utc', 'unknown')
           except Exception as exc:
-              raise SystemExit(f'No readable trained model: {exc}')
-          if model.get('schema_version') != 2 or model.get('eligible') is not True:
-              try:
-                  report = json.loads(Path('../model_report.json').read_text())
-              except Exception:
-                  report = {}
-              raise SystemExit(
-                  'No eligible model; APK build stopped. '
-                  f"Training status={report.get('status', 'unknown')}; "
-                  f"reason={report.get('reason', 'see model_report.json artifact')}"
-              )
-          print('Eligible model:', model.get('model_id', 'unknown'))
-          print('Training data ended:', model.get('training_data_end_utc', 'unknown'))
+              readable = eligible = False
+              model_id = 'unavailable'
+              trained_to = 'unknown'
+              model_error = str(exc)
+          try:
+              report = json.loads(report_path.read_text())
+          except Exception:
+              report = {}
+          status = report.get('status', 'unknown')
+          reason = report.get('reason', 'training report unavailable')
+          lines = [
+              '## QuantDesk model readiness',
+              '',
+              f'- Training status: `{status}`',
+              f'- Eligible validated model: `{eligible}`',
+              f'- Model ID: `{model_id}`',
+              f'- Training data through: `{trained_to}`',
+              f'- Report reason: {reason}',
+          ]
+          if not readable:
+              lines.append(f'- Model file issue: {locals().get("model_error", "unsupported model schema")}')
+          if not eligible:
+              lines += ['', 'The APK can be installed, but it will not produce AI trade predictions until a model passes validation.']
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('\n'.join(lines) + '\n')
+          print('Model eligible:', eligible)
+          print('Training status:', status)
+          print('APK build will continue; the app refuses to use an unvalidated model.')
           PY
 
       - name: Publish newly promoted model for the phone app
-        if: success()
+        if: success() && steps.train.outcome == 'success'
         run: |
           status="$(python -c "import json; print(json.load(open('model_report.json')).get('status', ''))")"
           if [ "$status" = "promoted" ]; then
@@ -135,8 +157,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-AI-Android-0.5.0
+          name: QuantDesk-AI-Android-0.5.1
           path: quantdesk-ai-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
-          
