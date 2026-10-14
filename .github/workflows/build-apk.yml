@@ -27,7 +27,7 @@ jobs:
           persist-credentials: true
 
       - name: Unpack Android source
-        run: unzip -q QuantDesk-AI-Android-ML-v0.3.zip -d .
+        run: unzip -q QuantDesk-AI-Android-ML-v0.4.zip -d .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -135,8 +135,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-AI-Android-0.3.0
+          name: QuantDesk-AI-Android-0.4.0
           path: quantdesk-ai-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
-          
