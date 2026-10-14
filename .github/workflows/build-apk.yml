@@ -1,101 +1,70 @@
-name: Train, validate, and build QuantDesk Prism AI
+name: Build QuantDesk Prism APK
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '23 3 * * *'
   push:
-    branches: [main]
-    paths-ignore:
-      - 'models/**'
+    branches: [main, master]
+    paths:
+      - '**.zip'
+      - 'app/**'
+      - '*.gradle'
+      - 'gradle.properties'
+      - 'tests/**'
+      - '.github/workflows/build-apk.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: quantdesk-prism-ai-${{ github.ref }}
-  cancel-in-progress: false
+  group: prism-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  train-and-build:
+  android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
+
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Locate separate Android app source
+      - name: Prepare complete source
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f QuantDesk-Prism-AI-1.1.0-Source.zip ]]; then
-            mkdir -p "$RUNNER_TEMP/quantdesk-prism-ai"
-            unzip -q QuantDesk-Prism-AI-1.1.0-Source.zip -d "$RUNNER_TEMP/quantdesk-prism-ai"
-            project="$RUNNER_TEMP/quantdesk-prism-ai/QuantDesk-Prism"
-          elif [[ -f QuantDesk-Prism/app/build.gradle ]]; then
-            project="$GITHUB_WORKSPACE/QuantDesk-Prism"
-          elif [[ -f app/build.gradle ]] && grep -q "applicationId 'com.emreakdag.quantdesk.prism250ai'" app/build.gradle; then
-            project="$GITHUB_WORKSPACE"
-          else
-            echo '::error::Upload QuantDesk-Prism-AI-1.1.0-Source.zip to the repository root or add the extracted QuantDesk-Prism project.'
-            exit 1
-          fi
-          test -f "$project/ml/train_model.py"
-          test -f "$project/app/src/main/assets/pretrained_model.json"
-          echo "PROJECT_DIR=$project" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import zipfile
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+          if Path('app/build.gradle').is_file() and Path('settings.gradle').is_file():
+              source = Path('.').resolve()
+          else:
+              archives = sorted(Path('.').glob('QuantDesk-Prism-*-Source.zip'))
+              if len(archives) != 1:
+                  raise SystemExit(
+                      'Repository root must contain exactly one '
+                      'QuantDesk-Prism-*-Source.zip; remove older Prism source ZIPs.'
+                  )
 
-      - name: Install training dependencies
-        run: python -m pip install -r "$PROJECT_DIR/ml/requirements.txt"
+              source = Path('prism-source').resolve()
+              source.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(archives[0]) as archive:
+                  for member in archive.infolist():
+                      target = (source / member.filename).resolve()
+                      if not target.is_relative_to(source):
+                          raise SystemExit(f'Unsafe ZIP path: {member.filename}')
+                  archive.extractall(source)
 
-      - name: Test trainer and AI runtime format
-        run: cd "$PROJECT_DIR/ml" && python -m unittest test_model.py -v
+              if not (source / 'app/build.gradle').is_file():
+                  raise SystemExit('Source ZIP is missing app/build.gradle.')
+              if not (source / 'settings.gradle').is_file():
+                  raise SystemExit('Source ZIP is missing settings.gradle.')
 
-      - name: Train and evaluate on historical market data
-        id: train
-        continue-on-error: true
-        run: >-
-          python "$PROJECT_DIR/ml/train_model.py"
-          --days 730
-          --symbols 24
-          --output "$PROJECT_DIR/app/src/main/assets/pretrained_model.json"
-          --champion "$GITHUB_WORKSPACE/models/latest.json"
-          --report "$GITHUB_WORKSPACE/model_report.json"
-
-      - name: Upload evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: QuantDesk-Prism-AI-evaluation-${{ github.run_number }}
-          path: model_report.json
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Promote model only after all holdout gates pass
-        if: steps.train.outcome == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          status="$(python -c "import json; print(json.load(open('model_report.json')).get('status', ''))")"
-          if [[ "$status" == promoted ]]; then
-            mkdir -p models
-            cp "$PROJECT_DIR/app/src/main/assets/pretrained_model.json" models/latest.json
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add models/latest.json
-            if ! git diff --cached --quiet; then
-              git commit -m 'Promote validated QuantDesk Prism AI model'
-              git push
-            fi
-          else
-            echo 'No model passed every promotion gate; the app will not show model probabilities.'
-          fi
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write(f'PRISM_SOURCE={source}\n')
+          print(f'Android project: {source}')
+          PY
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -104,26 +73,51 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android platform and build tools
-        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Test Prism analysis and AI fail-closed behavior
-        run: node "$PROJECT_DIR/scripts/test-analysis.cjs"
+      - name: Set up Node for analysis tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Build separate installable APK
-        run: cd "$PROJECT_DIR" && gradle --no-daemon :app:assembleDebug
+      - name: Validate analysis engine
+        working-directory: ${{ env.PRISM_SOURCE }}
+        run: node --test tests/engine.test.cjs
 
-      - name: Upload separate app APK
+      - name: Build APK and run Android lint
+        working-directory: ${{ env.PRISM_SOURCE }}
+        run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
+
+      - name: Package installable APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp "$PRISM_SOURCE/app/build/outputs/apk/debug/app-debug.apk" \
+            output/QuantDesk-Prism-1.0.0.apk
+          cd output
+          sha256sum QuantDesk-Prism-1.0.0.apk > SHA256.txt
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-Prism-AI-1.1.0
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          name: QuantDesk-Prism-1.0.0-APK
+          path: output/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload diagnostic reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuantDesk-Prism-build-reports
+          path: |
+            ${{ env.PRISM_SOURCE }}/app/build/reports/
+          if-no-files-found: ignore
