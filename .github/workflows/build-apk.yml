@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths: ['app/**', 'server/**', 'tests/**', '*.gradle', 'gradle.properties', '.github/workflows/**']
+    paths: ['**/app/**', '**/server/**', '**/tests/**', '**/*.gradle', '**/gradle.properties', '**/.github/workflows/**']
 permissions:
   contents: read
 concurrency:
@@ -14,9 +14,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Check out separate app project
+      - name: Check out repository
         uses: actions/checkout@v7
+      - name: Locate app project in repository
+        shell: bash
+        run: |
+          if [[ -f app/build.gradle && -f settings.gradle ]]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
+          else
+            mapfile -t PROJECTS < <(find "$GITHUB_WORKSPACE" -type f -path '*/app/build.gradle' -not -path '*/.git/*' -not -path '*/build/*' | sort)
+            if [[ ${#PROJECTS[@]} -eq 1 ]]; then
+              PROJECT_DIR="$(dirname "$(dirname "${PROJECTS[0]}")")"
+            elif [[ ${#PROJECTS[@]} -gt 1 ]]; then
+              echo "Birden fazla app/build.gradle bulundu; ayrı Crypto Analiz 106 projesi belirlenemedi." >&2
+              printf '%s\n' "${PROJECTS[@]}" >&2
+              exit 1
+            else
+              mapfile -t ARCHIVES < <(find "$GITHUB_WORKSPACE" -type f -name 'Crypto-Analiz-106-Source.zip' -not -path '*/.git/*' | sort)
+              if [[ ${#ARCHIVES[@]} -ne 1 ]]; then
+                echo "Depoda app/build.gradle yok ve tek bir Crypto-Analiz-106-Source.zip bulunamadı. ZIP'i çıkarıp proje dosyalarını depoya yükleyin." >&2
+                exit 1
+              fi
+              PROJECT_DIR="$RUNNER_TEMP/crypto-analiz-106-source"
+              mkdir -p "$PROJECT_DIR"
+              python3 - "${ARCHIVES[0]}" "$PROJECT_DIR" <<'PY'
+          import pathlib, sys, zipfile
+          archive, destination = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]).resolve()
+          with zipfile.ZipFile(archive) as z:
+              if sum(i.file_size for i in z.infolist()) > 100_000_000:
+                  raise SystemExit('Source archive exceeds size limit')
+              for item in z.infolist():
+                  if not (destination / item.filename).resolve().is_relative_to(destination):
+                      raise SystemExit('Unsafe archive path')
+              z.extractall(destination)
+          if not (destination / 'app/build.gradle').is_file() or not (destination / 'settings.gradle').is_file():
+              raise SystemExit('Archive does not contain the Android project at its root')
+          PY
+            fi
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
       - name: Verify separate Android identity
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           grep -q "applicationId 'com.emreakdag.cryptoanaliz106'" app/build.gradle
@@ -50,28 +89,31 @@ jobs:
         with:
           node-version: '24'
       - name: Validate source and run tests
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           for FILE in app/src/main/assets/*.js server/*.cjs; do node --check "$FILE"; done
           node --test tests/engine.test.cjs tests/quant.test.cjs tests/analytics.test.cjs tests/server.test.cjs tests/monitor.test.cjs tests/signal-history.test.cjs
       - name: Build and lint Android app
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
       - name: Verify package and publish APK artifact
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.emreakdag.cryptoanaliz106'"
-          mkdir -p output
-          cp "$APK" output/Crypto-Analiz-106-1.0.0.apk
-          cd output
+          mkdir -p "$RUNNER_TEMP/crypto-analiz-106-output"
+          cp "$APK" "$RUNNER_TEMP/crypto-analiz-106-output/Crypto-Analiz-106-1.0.0.apk"
+          cd "$RUNNER_TEMP/crypto-analiz-106-output"
           sha256sum Crypto-Analiz-106-1.0.0.apk > SHA256.txt
       - name: Upload installable APK
         uses: actions/upload-artifact@v7
         with:
           name: Crypto-Analiz-106-1.0.0-APK
-          path: output/
+          path: ${{ runner.temp }}/crypto-analiz-106-output/
           if-no-files-found: error
           retention-days: 30
       - name: Upload Android lint report
@@ -79,7 +121,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: Crypto-Analiz-106-lint-reports
-          path: app/build/reports/lint-results-debug.*
+          path: ${{ env.PROJECT_DIR }}/app/build/reports/lint-results-debug.*
           if-no-files-found: ignore
           retention-days: 30
           
