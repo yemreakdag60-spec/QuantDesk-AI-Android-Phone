@@ -1,58 +1,33 @@
-name: Build Prism Analysis 2.3 APK
+name: Build Crypto Analiz 106 APK
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths: ['**.zip', 'app/**', 'server/**', 'tests/**', '*.gradle', 'gradle.properties', '.github/workflows/**']
+    paths: ['app/**', 'server/**', 'tests/**', '*.gradle', 'gradle.properties', '.github/workflows/**']
 permissions:
   contents: read
 concurrency:
-  group: prism-analysis-${{ github.ref }}
+  group: crypto-analiz-106-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
-      - name: Checkout repository
+      - name: Check out separate app project
         uses: actions/checkout@v7
-      - name: Prepare complete analysis source
+      - name: Verify separate Android identity
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import os, zipfile
-          if Path('app/build.gradle').is_file() and Path('settings.gradle').is_file():
-              source = Path('.').resolve()
-          else:
-              archive = Path('QuantDesk-Prism-Analysis-2.3.0-Source.zip')
-              if not archive.is_file():
-                  raise SystemExit('Repository root must contain QuantDesk-Prism-Analysis-2.3.0-Source.zip or the extracted app project.')
-              dest = Path('prism-source').resolve()
-              dest.mkdir(exist_ok=True)
-              with zipfile.ZipFile(archive) as z:
-                  if sum(m.file_size for m in z.infolist()) > 100_000_000:
-                      raise SystemExit('Archive size limit')
-                  for m in z.infolist():
-                      if not (dest / m.filename).resolve().is_relative_to(dest):
-                          raise SystemExit('Unsafe ZIP path')
-                  z.extractall(dest)
-              projects = [p.parent for p in dest.rglob('settings.gradle') if (p.parent / 'app/build.gradle').is_file()]
-              if len(projects) != 1:
-                  raise SystemExit('Expected exactly one Android project')
-              source = projects[0]
-          for name in ['quant.js', 'pro.js', 'charts.js', 'research.js', 'analytics.js', 'advanced.js']:
-              if not (source / 'app/src/main/assets' / name).is_file():
-                  raise SystemExit('Missing source: ' + name)
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('PRISM_SOURCE=' + str(source) + '\n')
-          PY
+          grep -q "applicationId 'com.emreakdag.cryptoanaliz106'" app/build.gradle
+          grep -q 'android:label="Crypto Analiz 106"' app/src/main/AndroidManifest.xml
+          test "$(grep -c 'applicationId' app/build.gradle)" -eq 1
       - name: Java 17
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - name: Use preinstalled Android SDK
+      - name: Install Android SDK components
         shell: bash
         run: |
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -74,34 +49,37 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - name: Analysis and server verification
-        working-directory: ${{ env.PRISM_SOURCE }}
+      - name: Validate source and run tests
         shell: bash
         run: |
           for FILE in app/src/main/assets/*.js server/*.cjs; do node --check "$FILE"; done
-          node --test tests/engine.test.cjs tests/quant.test.cjs tests/analytics.test.cjs tests/server.test.cjs tests/monitor.test.cjs
-      - name: Build and lint
-        working-directory: ${{ env.PRISM_SOURCE }}
+          node --test tests/engine.test.cjs tests/quant.test.cjs tests/analytics.test.cjs tests/server.test.cjs tests/monitor.test.cjs tests/signal-history.test.cjs
+      - name: Build and lint Android app
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug
-      - name: Package APK
+      - name: Verify package and publish APK artifact
         shell: bash
         run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.emreakdag.cryptoanaliz106'"
           mkdir -p output
-          cp "$PRISM_SOURCE/app/build/outputs/apk/debug/app-debug.apk" output/Prism-Analiz-2.3.0.apk
+          cp "$APK" output/Crypto-Analiz-106-1.0.0.apk
           cd output
-          sha256sum Prism-Analiz-2.3.0.apk > SHA256.txt
+          sha256sum Crypto-Analiz-106-1.0.0.apk > SHA256.txt
       - name: Upload installable APK
         uses: actions/upload-artifact@v7
         with:
-          name: Prism-Analiz-2.3.0-APK
+          name: Crypto-Analiz-106-1.0.0-APK
           path: output/
           if-no-files-found: error
           retention-days: 30
-      - name: Upload diagnostic reports
-        if: always() && env.PRISM_SOURCE != ''
+      - name: Upload Android lint report
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: Prism-Analiz-2.3.0-reports
-          path: ${{ env.PRISM_SOURCE }}/app/build/reports/
+          name: Crypto-Analiz-106-lint-reports
+          path: app/build/reports/lint-results-debug.*
           if-no-files-found: ignore
+          retention-days: 30
           
