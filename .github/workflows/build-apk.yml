@@ -1,4 +1,4 @@
-name: Build QuantDesk Prism TP-SL APK
+name: Build QuantDesk Prism BTC 500+ APK
 
 on:
   workflow_dispatch:
@@ -30,8 +30,8 @@ jobs:
           node --check assets/prism-engine.js
           node --check assets/prism-app.js
 
-      - name: Patch only TP-SL logic
-        run: python3 scripts/patch_apk.py
+      - name: Patch scanner and TP-SL assets
+        run: python3 scripts/patch_apk.py --output build/QuantDesk-Prism-BTC-500-unsigned.apk
 
       - name: Prepare signing key
         env:
@@ -69,14 +69,14 @@ jobs:
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            --out build/QuantDesk-Prism-TP-SL.apk \
-            build/QuantDesk-Prism-TP-SL-unsigned.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify -v build/QuantDesk-Prism-TP-SL.apk
+            --out build/QuantDesk-Prism-BTC-500.apk \
+            build/QuantDesk-Prism-BTC-500-unsigned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify -v build/QuantDesk-Prism-BTC-500.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QuantDesk-Prism-TP-SL
-          path: build/QuantDesk-Prism-TP-SL.apk
+          name: QuantDesk-Prism-BTC-500
+          path: build/QuantDesk-Prism-BTC-500.apk
           if-no-files-found: error
           
